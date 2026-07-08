@@ -23,6 +23,9 @@ if not exist ".env" (
   exit /b 1
 )
 
+echo Starting Telegram button listener in a separate window...
+start "Telegram Buttons" cmd /k "cd /d %~dp0 && .venv\Scripts\python.exe scripts\telegram_listener.py"
+
 echo Starting 24/7 Leboncoin Gemini Bot monitor...
 echo Leave this window open. Press Ctrl+C to stop.
 echo.
