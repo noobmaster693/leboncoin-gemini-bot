@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from pathlib import Path
 import os
@@ -14,10 +15,23 @@ if str(ROOT) not in sys.path:
 from app.config import get_settings
 from app.email_watcher import LeboncoinEmailWatcher
 from app.gemini_evaluator import GeminiDealEvaluator
-from app.models import DealRecord
+from app.listing_fetcher import enrich_listing_from_fetch, fetch_listing_details
+from app.models import DealRecord, ListingInput
 from app.notifier import Notifier
 from app.rules import apply_hard_safety_rules
 from app.storage import DealStore
+
+
+async def enrich_if_enabled(listing: ListingInput, settings) -> tuple[ListingInput | None, str]:
+    if not settings.fetch_listing_details:
+        return listing, "Listing-page fetch disabled."
+
+    fetched = await fetch_listing_details(listing, settings)
+    if fetched.should_ignore:
+        return None, fetched.reason
+    if not fetched.ok:
+        return listing, fetched.reason
+    return enrich_listing_from_fetch(listing, fetched), fetched.reason
 
 
 def scan_once() -> int:
@@ -37,7 +51,13 @@ def scan_once() -> int:
                 print(f"Skipping existing listing {listing.listing_id}")
                 continue
 
-            print(f"Evaluating: {listing.title} | {listing.price_eur}€")
+            enriched_listing, fetch_reason = asyncio.run(enrich_if_enabled(listing, settings))
+            if enriched_listing is None:
+                print(f"Ignoring non-deal email/link: {listing.title} | {fetch_reason}")
+                continue
+
+            listing = enriched_listing
+            print(f"Evaluating: {listing.title} | {listing.price_eur}€ | {fetch_reason}")
             evaluation = evaluator.evaluate(listing)
             record = DealRecord(listing=listing, evaluation=evaluation)
             safety = apply_hard_safety_rules(listing, evaluation, settings)
