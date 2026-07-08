@@ -33,6 +33,7 @@ class Settings:
     imap_folder: str = os.getenv("IMAP_FOLDER", "INBOX")
     lbc_email_filter: str = os.getenv("LBC_EMAIL_FILTER", "leboncoin")
     max_email_age_days: int = int(os.getenv("MAX_EMAIL_AGE_DAYS", "3"))
+    max_listing_links_per_email: int = int(os.getenv("MAX_LISTING_LINKS_PER_EMAIL", "25"))
 
     telegram_bot_token: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
     telegram_chat_id: str = os.getenv("TELEGRAM_CHAT_ID", "")
