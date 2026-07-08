@@ -72,16 +72,14 @@ class GeminiDealEvaluator:
         prompt = _build_prompt(listing)
         schema: dict[str, Any] = DealEvaluation.model_json_schema()
 
+        # google-genai uses response_mime_type / response_schema.
+        # Do not use OpenAI-style response_format here.
         response = self.client.models.generate_content(
             model=self.settings.gemini_model,
             contents=prompt,
             config={
-                "response_format": {
-                    "text": {
-                        "mime_type": "application/json",
-                        "schema": schema,
-                    }
-                }
+                "response_mime_type": "application/json",
+                "response_schema": schema,
             },
         )
 
