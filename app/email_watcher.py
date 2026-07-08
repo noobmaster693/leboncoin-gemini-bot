@@ -5,10 +5,11 @@ import email
 from email.message import Message
 from email.utils import parsedate_to_datetime
 import hashlib
+import html as html_lib
 import imaplib
 import re
 from typing import List, Optional
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from bs4 import BeautifulSoup
 
@@ -73,33 +74,54 @@ TRACKING_OR_ACCOUNT_URL_MARKERS = [
 ]
 
 
+def _normalize_url(url: str) -> str:
+    cleaned = html_lib.unescape(url.strip()).rstrip(").,;]")
+    parsed = urlparse(cleaned)
+
+    # Some email systems wrap links. If the wrapper contains a real leboncoin URL in a query parameter,
+    # unwrap it so the rest of the bot can evaluate the real destination.
+    query = parse_qs(parsed.query)
+    for key in ["url", "u", "target", "redirect", "redirect_url", "r"]:
+        for value in query.get(key, []):
+            decoded = unquote(value)
+            if "leboncoin" in decoded.lower() and decoded.startswith("http"):
+                return decoded.rstrip(").,;]")
+    return cleaned
+
+
 def _message_to_text(msg: Message) -> str:
     chunks: list[str] = []
     if msg.is_multipart():
-        for part in msg.walk():
-            content_type = part.get_content_type()
-            if content_type not in {"text/plain", "text/html"}:
-                continue
-            payload = part.get_payload(decode=True)
-            if not payload:
-                continue
-            charset = part.get_content_charset() or "utf-8"
-            decoded = payload.decode(charset, errors="replace")
-            if content_type == "text/html":
-                decoded = BeautifulSoup(decoded, "html.parser").get_text(" ", strip=True)
-            chunks.append(decoded)
+        parts = msg.walk()
     else:
-        payload = msg.get_payload(decode=True)
-        if payload:
-            charset = msg.get_content_charset() or "utf-8"
-            chunks.append(payload.decode(charset, errors="replace"))
+        parts = [msg]
+
+    for part in parts:
+        content_type = part.get_content_type()
+        if content_type not in {"text/plain", "text/html"}:
+            continue
+        payload = part.get_payload(decode=True)
+        if not payload:
+            continue
+        charset = part.get_content_charset() or "utf-8"
+        decoded = payload.decode(charset, errors="replace")
+        if content_type == "text/html":
+            soup = BeautifulSoup(decoded, "html.parser")
+            visible_text = soup.get_text(" ", strip=True)
+            hrefs = []
+            for tag in soup.find_all(["a", "area"]):
+                href = tag.get("href")
+                if href:
+                    hrefs.append(_normalize_url(href))
+            decoded = visible_text + "\n" + "\n".join(hrefs)
+        chunks.append(decoded)
     return "\n".join(chunks)
 
 
 def _extract_urls(text: str) -> list[str]:
     urls = []
     for match in URL_RE.findall(text):
-        cleaned = match.rstrip(").,;]")
+        cleaned = _normalize_url(match)
         if "leboncoin" in cleaned.lower():
             urls.append(cleaned)
     return list(dict.fromkeys(urls))
