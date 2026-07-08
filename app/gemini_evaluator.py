@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Iterable
 
 from google import genai
 from pydantic import ValidationError
@@ -68,6 +68,33 @@ Return a DealEvaluation JSON object.
 """.strip()
 
 
+def _unique_models(primary: str, fallbacks: Iterable[str]) -> list[str]:
+    models: list[str] = []
+    for model in [primary, *fallbacks]:
+        if model and model not in models:
+            models.append(model)
+    return models
+
+
+def _is_retryable_model_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return any(
+        marker in text
+        for marker in [
+            "resource_exhausted",
+            "quota",
+            "rate",
+            "429",
+            "not found",
+            "not_found",
+            "permission",
+            "model",
+            "thinking",
+            "extra",
+        ]
+    )
+
+
 class GeminiDealEvaluator:
     def __init__(self, settings: Settings):
         if not settings.gemini_api_key:
@@ -85,12 +112,10 @@ class GeminiDealEvaluator:
             config["thinking_config"] = {"thinking_budget": self.settings.gemini_thinking_budget}
         return config
 
-    def evaluate(self, listing: ListingInput) -> DealEvaluation:
-        prompt = _build_prompt(listing)
-
+    def _call_model(self, model: str, prompt: str) -> str:
         try:
             response = self.client.models.generate_content(
-                model=self.settings.gemini_model,
+                model=model,
                 contents=prompt,
                 config=self._make_config(include_thinking=True),
             )
@@ -99,20 +124,36 @@ class GeminiDealEvaluator:
             if "thinking" not in str(exc).lower() and "extra" not in str(exc).lower():
                 raise
             response = self.client.models.generate_content(
-                model=self.settings.gemini_model,
+                model=model,
                 contents=prompt,
                 config=self._make_config(include_thinking=False),
             )
+        return getattr(response, "text", "") or ""
 
-        text = getattr(response, "text", "") or ""
-        try:
-            return DealEvaluation.model_validate_json(text)
-        except ValidationError as exc:
-            # Fallback for cases where SDK returns JSON with surrounding text.
-            start = text.find("{")
-            end = text.rfind("}")
-            if start >= 0 and end > start:
-                return DealEvaluation.model_validate_json(text[start : end + 1])
-            raise RuntimeError(f"Gemini returned invalid evaluation JSON: {text}") from exc
-        except json.JSONDecodeError as exc:
-            raise RuntimeError(f"Gemini returned invalid JSON: {text}") from exc
+    def evaluate(self, listing: ListingInput) -> DealEvaluation:
+        prompt = _build_prompt(listing)
+        last_error: Exception | None = None
+
+        for model in _unique_models(self.settings.gemini_model, self.settings.gemini_fallback_models):
+            try:
+                text = self._call_model(model, prompt)
+                try:
+                    return DealEvaluation.model_validate_json(text)
+                except ValidationError as exc:
+                    # Fallback for cases where SDK returns JSON with surrounding text.
+                    start = text.find("{")
+                    end = text.rfind("}")
+                    if start >= 0 and end > start:
+                        return DealEvaluation.model_validate_json(text[start : end + 1])
+                    raise RuntimeError(f"Gemini returned invalid evaluation JSON from {model}: {text}") from exc
+                except json.JSONDecodeError as exc:
+                    raise RuntimeError(f"Gemini returned invalid JSON from {model}: {text}") from exc
+            except Exception as exc:
+                last_error = exc
+                if not _is_retryable_model_error(exc):
+                    raise
+                print(f"Gemini model {model} failed: {exc}")
+                print("Trying fallback model if available...")
+                continue
+
+        raise RuntimeError(f"All Gemini models failed. Last error: {last_error}")
