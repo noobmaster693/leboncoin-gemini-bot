@@ -32,17 +32,23 @@ def scan_once() -> int:
 
     processed = 0
     for listing in listings:
-        if store.exists(listing.listing_id):
-            print(f"Skipping existing listing {listing.listing_id}")
-            continue
+        try:
+            if store.exists(listing.listing_id):
+                print(f"Skipping existing listing {listing.listing_id}")
+                continue
 
-        print(f"Evaluating: {listing.title} | {listing.price_eur}€")
-        evaluation = evaluator.evaluate(listing)
-        record = DealRecord(listing=listing, evaluation=evaluation)
-        safety = apply_hard_safety_rules(listing, evaluation, settings)
-        store.save(record)
-        notifier.send_deal_alert(record, safety)
-        processed += 1
+            print(f"Evaluating: {listing.title} | {listing.price_eur}€")
+            evaluation = evaluator.evaluate(listing)
+            record = DealRecord(listing=listing, evaluation=evaluation)
+            safety = apply_hard_safety_rules(listing, evaluation, settings)
+            store.save(record)
+            notifier.send_deal_alert(record, safety)
+            processed += 1
+        except Exception:
+            print(f"Error while processing listing {listing.listing_id} | {listing.title}")
+            traceback.print_exc()
+            print("Continuing with next listing...")
+            continue
 
     return processed
 
