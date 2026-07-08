@@ -9,6 +9,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+def _bool_env(name: str, default: str = "true") -> bool:
+    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
 @dataclass(frozen=True)
 class Settings:
     gemini_api_key: str = os.getenv("GEMINI_API_KEY", "")
@@ -28,6 +32,7 @@ class Settings:
     imap_password: str = os.getenv("IMAP_PASSWORD", "")
     imap_folder: str = os.getenv("IMAP_FOLDER", "INBOX")
     lbc_email_filter: str = os.getenv("LBC_EMAIL_FILTER", "leboncoin")
+    max_email_age_days: int = int(os.getenv("MAX_EMAIL_AGE_DAYS", "3"))
 
     telegram_bot_token: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
     telegram_chat_id: str = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -38,6 +43,7 @@ class Settings:
     daily_purchase_limit_eur: int = int(os.getenv("DAILY_PURCHASE_LIMIT_EUR", "250"))
 
     purchase_mode: str = os.getenv("PURCHASE_MODE", "guided")
+    fetch_listing_details: bool = _bool_env("FETCH_LISTING_DETAILS", "true")
     playwright_user_data_dir: Path = Path(os.getenv("PLAYWRIGHT_USER_DATA_DIR", ".browser-profile"))
     db_path: Path = Path(os.getenv("DB_PATH", "deals.sqlite3"))
 
