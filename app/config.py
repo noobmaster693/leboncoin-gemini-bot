@@ -12,7 +12,11 @@ load_dotenv()
 @dataclass(frozen=True)
 class Settings:
     gemini_api_key: str = os.getenv("GEMINI_API_KEY", "")
-    gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    # Use Pro by default for slower but stronger deal analysis.
+    gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-2.5-pro")
+    gemini_temperature: float = float(os.getenv("GEMINI_TEMPERATURE", "0.2"))
+    # Set to -1 to disable thinking budget. Some Gemini SDK/model combinations may ignore this.
+    gemini_thinking_budget: int = int(os.getenv("GEMINI_THINKING_BUDGET", "8192"))
 
     imap_host: str = os.getenv("IMAP_HOST", "imap.gmail.com")
     imap_port: int = int(os.getenv("IMAP_PORT", "993"))
