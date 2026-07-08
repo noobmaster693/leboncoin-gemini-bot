@@ -34,6 +34,8 @@ class Settings:
     lbc_email_filter: str = os.getenv("LBC_EMAIL_FILTER", "leboncoin")
     max_email_age_days: int = int(os.getenv("MAX_EMAIL_AGE_DAYS", "3"))
     max_listing_links_per_email: int = int(os.getenv("MAX_LISTING_LINKS_PER_EMAIL", "25"))
+    # Use BODY.PEEK so fetch itself does not mark emails read. Then optionally mark after parsing.
+    mark_emails_seen_after_parse: bool = _bool_env("MARK_EMAILS_SEEN_AFTER_PARSE", "true")
 
     telegram_bot_token: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
     telegram_chat_id: str = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -45,6 +47,8 @@ class Settings:
 
     purchase_mode: str = os.getenv("PURCHASE_MODE", "guided")
     fetch_listing_details: bool = _bool_env("FETCH_LISTING_DETAILS", "true")
+    # Set true only for testing old emails already stored in deals.sqlite3.
+    reprocess_existing_listings: bool = _bool_env("REPROCESS_EXISTING_LISTINGS", "false")
     playwright_user_data_dir: Path = Path(os.getenv("PLAYWRIGHT_USER_DATA_DIR", ".browser-profile"))
     db_path: Path = Path(os.getenv("DB_PATH", "deals.sqlite3"))
 
