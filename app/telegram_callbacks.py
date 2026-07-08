@@ -7,6 +7,7 @@ import requests
 
 from .config import Settings
 from .leboncoin_messenger import send_seller_message_sync
+from .purchase_assistant import preflight_purchase_checks, run_guided_checkout
 from .storage import DealStore
 
 
@@ -97,16 +98,26 @@ class TelegramCallbackHandler:
             return
 
         if action == "buy":
-            self.store.update_status(listing_id, "purchase_confirmed")
-            self.answer_callback(callback_id, "Purchase confirmed locally.")
+            max_total = record.evaluation.max_buy_price_eur or record.evaluation.estimated_total_cost_eur or record.listing.price_eur or self.settings.max_total_eur
+            check = preflight_purchase_checks(record, float(max_total), self.settings)
+            if not check.ok:
+                self.answer_callback(callback_id, "Blocked by safety checks.")
+                if chat_id:
+                    self.send_message(chat_id, "⚠️ <b>Checkout blocked.</b>\n\n" + html.escape(check.reason))
+                return
+
+            self.store.update_status(listing_id, "checkout_opening")
+            self.answer_callback(callback_id, "Opening checkout on the PC...")
             if chat_id:
-                max_total = record.evaluation.max_buy_price_eur or record.evaluation.estimated_total_cost_eur or record.listing.price_eur or self.settings.max_total_eur
                 self.send_message(
                     chat_id,
-                    "<b>Purchase confirmed.</b>\n\n"
-                    "Run this on the PC to open guided checkout:\n"
-                    f"<code>python scripts/open_checkout.py {html.escape(listing_id)} --approved-max-total {max_total}</code>",
+                    "⚡ <b>Opening checkout on the PC now.</b>\n\n"
+                    "The browser will open on the computer running the bot. It will stop for login, CAPTCHA, 2FA, or final payment confirmation.",
                 )
+            if chat_id and message_id:
+                self.edit_reply_markup(chat_id, message_id)
+
+            run_guided_checkout(record, float(max_total), self.settings)
             return
 
         self.answer_callback(callback_id, f"Unknown action: {action}")
