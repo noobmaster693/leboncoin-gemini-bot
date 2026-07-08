@@ -18,6 +18,7 @@ from .models import ListingInput
 
 URL_RE = re.compile(r"https?://[^\s\"'<>]+")
 PRICE_RE = re.compile(r"(?<!\d)(\d{1,5}(?:[\s.,]\d{3})?)(?:\s?€|\s?EUR)", re.IGNORECASE)
+VI_LISTING_RE = re.compile(r"/vi/\d+\.htm", re.IGNORECASE)
 
 IGNORE_SUBJECT_KEYWORDS = [
     "suppression de vos annonces",
@@ -64,7 +65,6 @@ TRACKING_OR_ACCOUNT_URL_MARKERS = [
     "preferences",
     "account",
     "messagerie",
-    "message",
     "auth",
     "login",
     "aide",
@@ -131,7 +131,7 @@ def _is_probable_listing_url(url: str) -> bool:
     low = url.lower()
     if any(marker in low for marker in TRACKING_OR_ACCOUNT_URL_MARKERS):
         return False
-    return any(marker in low for marker in ["/ad/", "/offre/", "ordinateurs", "informatique"])
+    return any(marker in low for marker in ["/ad/", "/offre/", "/vi/", "ordinateurs", "informatique"]) or bool(VI_LISTING_RE.search(low))
 
 
 def _extract_price(text: str) -> Optional[float]:
