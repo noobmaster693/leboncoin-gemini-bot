@@ -59,7 +59,7 @@ class Notifier:
         buttons = []
         if record.evaluation.decision == Decision.buy_ready and safety and safety.allowed_for_buy_alert:
             buttons.append([
-                {"text": "✅ Confirm purchase", "callback_data": f"buy:{listing_id}"},
+                {"text": "⚡ Open checkout now", "callback_data": f"buy:{listing_id}"},
                 {"text": "❌ Skip", "callback_data": f"skip:{listing_id}"},
             ])
         elif record.evaluation.decision == Decision.ask_seller:
