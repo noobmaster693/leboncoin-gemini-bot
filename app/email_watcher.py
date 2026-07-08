@@ -16,6 +16,34 @@ from .models import ListingInput
 URL_RE = re.compile(r"https?://[^\s\"'<>]+")
 PRICE_RE = re.compile(r"(?<!\d)(\d{1,5}(?:[\s.,]\d{3})?)(?:\s?€|\s?EUR)", re.IGNORECASE)
 
+IGNORE_SUBJECT_KEYWORDS = [
+    "suppression de vos annonces",
+    "supprime",
+    "mot de passe",
+    "connexion",
+    "sécurité",
+    "securite",
+    "paiement",
+    "facture",
+    "newsletter",
+    "conditions générales",
+]
+
+LISTING_HINT_KEYWORDS = [
+    "nouvelle annonce",
+    "nouvelles annonces",
+    "recherche sauvegardée",
+    "recherche sauvegardee",
+    "alerte",
+    "ordinateur",
+    "pc portable",
+    "laptop",
+    "macbook",
+    "thinkpad",
+    "latitude",
+    "vostro",
+]
+
 
 def _message_to_text(msg: Message) -> str:
     chunks: list[str] = []
@@ -68,6 +96,24 @@ def _listing_id_from_url_or_text(url: str, text: str) -> str:
     return hashlib.sha256((url + text[:500]).encode("utf-8")).hexdigest()[:16]
 
 
+def _looks_like_listing_email(subject: str, text: str, urls: list[str]) -> bool:
+    combined = f"{subject}\n{text[:1500]}".lower()
+
+    if any(keyword in combined for keyword in IGNORE_SUBJECT_KEYWORDS):
+        return False
+
+    has_listing_url = any(
+        marker in u.lower()
+        for u in urls
+        for marker in ["/ad/", "/offre/", "ordinateurs", "informatique"]
+    )
+    has_hint = any(keyword in combined for keyword in LISTING_HINT_KEYWORDS)
+    has_price = _extract_price(text) is not None
+
+    # Require at least a listing-ish URL or a listing alert hint with price.
+    return has_listing_url or (has_hint and has_price)
+
+
 def listing_from_email_message(msg: Message) -> Optional[ListingInput]:
     subject = email.header.make_header(email.header.decode_header(msg.get("Subject", ""))).__str__()
     text = _message_to_text(msg)
@@ -75,7 +121,10 @@ def listing_from_email_message(msg: Message) -> Optional[ListingInput]:
     if not urls:
         return None
 
-    direct_urls = [u for u in urls if "/ad/" in u or "/offre/" in u or "ordinateurs" in u]
+    if not _looks_like_listing_email(subject, text, urls):
+        return None
+
+    direct_urls = [u for u in urls if "/ad/" in u.lower() or "/offre/" in u.lower() or "ordinateurs" in u.lower()]
     url = direct_urls[0] if direct_urls else urls[0]
     listing_id = _listing_id_from_url_or_text(url, text)
 
