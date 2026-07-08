@@ -58,6 +58,20 @@ LISTING_HINT_KEYWORDS = [
     "vostro",
 ]
 
+TRACKING_OR_ACCOUNT_URL_MARKERS = [
+    "unsubscribe",
+    "preferences",
+    "account",
+    "messagerie",
+    "message",
+    "auth",
+    "login",
+    "aide",
+    "assistance",
+    "legal",
+    "cgu",
+]
+
 
 def _message_to_text(msg: Message) -> str:
     chunks: list[str] = []
@@ -89,6 +103,13 @@ def _extract_urls(text: str) -> list[str]:
         if "leboncoin" in cleaned.lower():
             urls.append(cleaned)
     return list(dict.fromkeys(urls))
+
+
+def _is_probable_listing_url(url: str) -> bool:
+    low = url.lower()
+    if any(marker in low for marker in TRACKING_OR_ACCOUNT_URL_MARKERS):
+        return False
+    return any(marker in low for marker in ["/ad/", "/offre/", "ordinateurs", "informatique"])
 
 
 def _extract_price(text: str) -> Optional[float]:
@@ -143,11 +164,8 @@ def _looks_like_listing_email(subject: str, text: str, urls: list[str]) -> bool:
     if _is_own_account_or_message_email(combined):
         return False
 
-    has_listing_url = any(
-        marker in u.lower()
-        for u in urls
-        for marker in ["/ad/", "/offre/", "ordinateurs", "informatique"]
-    )
+    direct_urls = [u for u in urls if _is_probable_listing_url(u)]
+    has_listing_url = bool(direct_urls)
     has_hint = any(keyword in combined for keyword in LISTING_HINT_KEYWORDS)
     has_price = _extract_price(text) is not None
 
@@ -155,34 +173,52 @@ def _looks_like_listing_email(subject: str, text: str, urls: list[str]) -> bool:
     return has_listing_url or (has_hint and has_price)
 
 
-def listing_from_email_message(msg: Message, max_age_days: int = 3) -> Optional[ListingInput]:
+def listings_from_email_message(msg: Message, max_age_days: int = 3, max_links: int = 25) -> list[ListingInput]:
     if _is_too_old(msg, max_age_days):
-        return None
+        return []
 
     subject = email.header.make_header(email.header.decode_header(msg.get("Subject", ""))).__str__()
     text = _message_to_text(msg)
     urls = _extract_urls(text)
     if not urls:
-        return None
+        return []
 
     if not _looks_like_listing_email(subject, text, urls):
-        return None
+        return []
 
-    direct_urls = [u for u in urls if "/ad/" in u.lower() or "/offre/" in u.lower() or "ordinateurs" in u.lower()]
-    url = direct_urls[0] if direct_urls else urls[0]
-    listing_id = _listing_id_from_url_or_text(url, text)
+    direct_urls = [u for u in urls if _is_probable_listing_url(u)]
+    # Digest emails may contain many listing links. Treat each as its own listing candidate.
+    # If no direct listing URL is found, keep one fallback URL so the fetcher can reject it later.
+    candidate_urls = direct_urls[:max_links] if direct_urls else urls[:1]
     email_dt = _email_datetime(msg)
+    price = _extract_price(text)
 
-    return ListingInput(
-        listing_id=listing_id,
-        title=subject or "Leboncoin listing",
-        url=url,
-        price_eur=_extract_price(text),
-        description=text[:2000],
-        email_subject=subject,
-        raw_text=text,
-        first_seen_at=email_dt or datetime.now(timezone.utc),
-    )
+    listings: list[ListingInput] = []
+    for index, url in enumerate(candidate_urls, start=1):
+        listing_id = _listing_id_from_url_or_text(url, text)
+        title = subject or "Leboncoin listing"
+        if len(candidate_urls) > 1:
+            title = f"{title} | listing {index}/{len(candidate_urls)}"
+
+        listings.append(
+            ListingInput(
+                listing_id=listing_id,
+                title=title,
+                url=url,
+                price_eur=price,
+                description=text[:2000],
+                email_subject=subject,
+                raw_text=text,
+                first_seen_at=email_dt or datetime.now(timezone.utc),
+            )
+        )
+    return listings
+
+
+def listing_from_email_message(msg: Message, max_age_days: int = 3) -> Optional[ListingInput]:
+    # Backward-compatible helper for older imports/tests.
+    listings = listings_from_email_message(msg, max_age_days=max_age_days, max_links=1)
+    return listings[0] if listings else None
 
 
 class LeboncoinEmailWatcher:
@@ -211,7 +247,11 @@ class LeboncoinEmailWatcher:
                     continue
                 raw = msg_data[0][1]
                 msg = email.message_from_bytes(raw)
-                listing = listing_from_email_message(msg, max_age_days=self.settings.max_email_age_days)
-                if listing:
-                    listings.append(listing)
+                listings.extend(
+                    listings_from_email_message(
+                        msg,
+                        max_age_days=self.settings.max_email_age_days,
+                        max_links=self.settings.max_listing_links_per_email,
+                    )
+                )
         return listings
