@@ -21,6 +21,7 @@ URL_RE = re.compile(r"https?://[^\s\"'<>]+")
 PRICE_RE = re.compile(r"(?<!\d)(\d{1,5}(?:[\s.,]\d{3})?)(?:\s?€|\s?EUR)", re.IGNORECASE)
 VI_LISTING_RE = re.compile(r"/vi/\d+\.htm", re.IGNORECASE)
 RAW_VI_URL_RE = re.compile(r"https?://www\.leboncoin\.fr/vi/\d+\.htm", re.IGNORECASE)
+BACKGROUND_IMAGE_RE = re.compile(r"background-image:\s*url\(([^)]+)\)", re.IGNORECASE)
 
 IGNORE_SUBJECT_KEYWORDS = [
     "suppression de vos annonces",
@@ -91,22 +92,37 @@ def _normalize_url(url: str) -> str:
     return cleaned
 
 
+def _decode_part(part: Message) -> Optional[str]:
+    payload = part.get_payload(decode=True)
+    if not payload:
+        return None
+    charset = part.get_content_charset() or "utf-8"
+    return payload.decode(charset, errors="replace")
+
+
+def _html_parts(msg: Message) -> list[str]:
+    parts = msg.walk() if msg.is_multipart() else [msg]
+    html_parts: list[str] = []
+    for part in parts:
+        if part.get_content_type() != "text/html":
+            continue
+        decoded = _decode_part(part)
+        if decoded:
+            html_parts.append(decoded)
+    return html_parts
+
+
 def _message_to_text(msg: Message) -> str:
     chunks: list[str] = []
-    if msg.is_multipart():
-        parts = msg.walk()
-    else:
-        parts = [msg]
+    parts = msg.walk() if msg.is_multipart() else [msg]
 
     for part in parts:
         content_type = part.get_content_type()
         if content_type not in {"text/plain", "text/html"}:
             continue
-        payload = part.get_payload(decode=True)
-        if not payload:
+        decoded = _decode_part(part)
+        if not decoded:
             continue
-        charset = part.get_content_charset() or "utf-8"
-        decoded = payload.decode(charset, errors="replace")
         if content_type == "text/html":
             soup = BeautifulSoup(decoded, "html.parser")
             visible_text = soup.get_text(" ", strip=True)
@@ -221,6 +237,79 @@ def _looks_like_listing_email(subject: str, text: str, urls: list[str]) -> bool:
     return has_listing_url or (has_hint and has_price)
 
 
+def _extract_card_image_url(card) -> Optional[str]:
+    for tag in card.find_all(style=True):
+        style = tag.get("style") or ""
+        match = BACKGROUND_IMAGE_RE.search(style)
+        if match:
+            return html_lib.unescape(match.group(1).strip("'\""))
+    img = card.find("img")
+    if img and img.get("src"):
+        return html_lib.unescape(img.get("src"))
+    return None
+
+
+def _extract_listing_cards_from_html(msg: Message, subject: str, email_dt: Optional[datetime], max_links: int) -> list[ListingInput]:
+    listings: list[ListingInput] = []
+    seen_ids: set[str] = set()
+
+    for html in _html_parts(msg):
+        soup = BeautifulSoup(html, "html.parser")
+        links = []
+        for a in soup.find_all("a", href=True):
+            url = _normalize_url(a["href"])
+            if _is_probable_listing_url(url):
+                links.append((a, url))
+
+        for a, url in links:
+            listing_id = _listing_id_from_url_or_text(url, "")
+            if listing_id in seen_ids:
+                continue
+            seen_ids.add(listing_id)
+
+            card = a.find_parent("table") or a.find_parent("tr") or a
+            card_text = card.get_text(" ", strip=True)
+            span_texts = [s.get_text(" ", strip=True) for s in card.find_all("span")]
+            span_texts = [s for s in span_texts if s]
+
+            title = span_texts[0] if span_texts else (a.get_text(" ", strip=True) or subject)
+            price = None
+            location = None
+            for text in span_texts[1:]:
+                if price is None and _extract_price(text) is not None:
+                    price = _extract_price(text)
+                    continue
+                if location is None and _extract_price(text) is None:
+                    location = text
+
+            if price is None:
+                price = _extract_price(card_text)
+
+            image_url = _extract_card_image_url(card)
+            raw_text = f"Leboncoin saved-search email card:\nTitle: {title}\nPrice: {price if price is not None else 'unknown'}€\nLocation: {location or 'unknown'}\nCard text: {card_text}\nEmail subject: {subject}"
+
+            listings.append(
+                ListingInput(
+                    listing_id=listing_id,
+                    title=title,
+                    url=url,
+                    price_eur=price,
+                    location=location,
+                    description=card_text[:2000],
+                    email_subject=subject,
+                    raw_text=raw_text,
+                    image_urls=[image_url] if image_url else [],
+                    first_seen_at=email_dt or datetime.now(timezone.utc),
+                )
+            )
+            if len(listings) >= max_links:
+                break
+        if len(listings) >= max_links:
+            break
+
+    return listings
+
+
 def _build_listing_inputs_from_urls(
     *,
     subject: str,
@@ -267,6 +356,12 @@ def listings_from_email_message(msg: Message, max_age_days: int = 3, max_links: 
 
     if not _looks_like_listing_email(subject, text, urls):
         return []
+
+    # Prefer card-level parsing. This avoids opening the website for every card and gives each listing
+    # its own title, price, location, and image from the email itself.
+    card_listings = _extract_listing_cards_from_html(msg, subject, _email_datetime(msg), max_links)
+    if card_listings:
+        return card_listings
 
     return _build_listing_inputs_from_urls(
         subject=subject,
