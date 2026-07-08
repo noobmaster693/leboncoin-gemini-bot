@@ -47,7 +47,7 @@ def scan_once() -> int:
     processed = 0
     for listing in listings:
         try:
-            if store.exists(listing.listing_id):
+            if store.exists(listing.listing_id) and not settings.reprocess_existing_listings:
                 print(f"Skipping existing listing {listing.listing_id}")
                 continue
 
