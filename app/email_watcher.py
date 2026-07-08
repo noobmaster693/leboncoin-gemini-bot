@@ -27,6 +27,18 @@ IGNORE_SUBJECT_KEYWORDS = [
     "facture",
     "newsletter",
     "conditions générales",
+    # Own-account / seller-side notifications, not buyer deal alerts.
+    "votre annonce",
+    "votre annonce est en ligne",
+    "est en ligne",
+    "annonce a été publiée",
+    "annonce a ete publiee",
+    "nouveau message pour",
+    "nouveaux messages pour",
+    "message pour votre annonce",
+    "vous avez reçu un message",
+    "vous avez recu un message",
+    "livraison est en ligne",
 ]
 
 LISTING_HINT_KEYWORDS = [
@@ -96,10 +108,15 @@ def _listing_id_from_url_or_text(url: str, text: str) -> str:
     return hashlib.sha256((url + text[:500]).encode("utf-8")).hexdigest()[:16]
 
 
-def _looks_like_listing_email(subject: str, text: str, urls: list[str]) -> bool:
-    combined = f"{subject}\n{text[:1500]}".lower()
+def _is_own_account_or_message_email(combined: str) -> bool:
+    return any(keyword in combined for keyword in IGNORE_SUBJECT_KEYWORDS)
 
-    if any(keyword in combined for keyword in IGNORE_SUBJECT_KEYWORDS):
+
+def _looks_like_listing_email(subject: str, text: str, urls: list[str]) -> bool:
+    combined = f"{subject}\n{text[:3000]}".lower()
+
+    # Hard reject before AI: these are not deal alerts, even if they contain a Leboncoin URL or price.
+    if _is_own_account_or_message_email(combined):
         return False
 
     has_listing_url = any(
