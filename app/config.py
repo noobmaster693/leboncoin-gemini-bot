@@ -46,7 +46,9 @@ class Settings:
     daily_purchase_limit_eur: int = int(os.getenv("DAILY_PURCHASE_LIMIT_EUR", "250"))
 
     purchase_mode: str = os.getenv("PURCHASE_MODE", "guided")
-    fetch_listing_details: bool = _bool_env("FETCH_LISTING_DETAILS", "true")
+    # False by default: analyze the embedded email card first. This avoids opening many Leboncoin pages
+    # and greatly reduces CAPTCHA/robot checks. Set true only if you accept the extra page loads.
+    fetch_listing_details: bool = _bool_env("FETCH_LISTING_DETAILS", "false")
     # Set true only for testing old emails already stored in deals.sqlite3.
     reprocess_existing_listings: bool = _bool_env("REPROCESS_EXISTING_LISTINGS", "false")
     playwright_user_data_dir: Path = Path(os.getenv("PLAYWRIGHT_USER_DATA_DIR", ".browser-profile"))
