@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone, timedelta
 import email
 from email.message import Message
+from email.utils import parsedate_to_datetime
 import hashlib
 import imaplib
 import re
@@ -108,6 +110,28 @@ def _listing_id_from_url_or_text(url: str, text: str) -> str:
     return hashlib.sha256((url + text[:500]).encode("utf-8")).hexdigest()[:16]
 
 
+def _email_datetime(msg: Message) -> Optional[datetime]:
+    date_header = msg.get("Date")
+    if not date_header:
+        return None
+    try:
+        dt = parsedate_to_datetime(date_header)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _is_too_old(msg: Message, max_age_days: int) -> bool:
+    if max_age_days <= 0:
+        return False
+    dt = _email_datetime(msg)
+    if not dt:
+        return False
+    return dt < datetime.now(timezone.utc) - timedelta(days=max_age_days)
+
+
 def _is_own_account_or_message_email(combined: str) -> bool:
     return any(keyword in combined for keyword in IGNORE_SUBJECT_KEYWORDS)
 
@@ -131,7 +155,10 @@ def _looks_like_listing_email(subject: str, text: str, urls: list[str]) -> bool:
     return has_listing_url or (has_hint and has_price)
 
 
-def listing_from_email_message(msg: Message) -> Optional[ListingInput]:
+def listing_from_email_message(msg: Message, max_age_days: int = 3) -> Optional[ListingInput]:
+    if _is_too_old(msg, max_age_days):
+        return None
+
     subject = email.header.make_header(email.header.decode_header(msg.get("Subject", ""))).__str__()
     text = _message_to_text(msg)
     urls = _extract_urls(text)
@@ -144,6 +171,7 @@ def listing_from_email_message(msg: Message) -> Optional[ListingInput]:
     direct_urls = [u for u in urls if "/ad/" in u.lower() or "/offre/" in u.lower() or "ordinateurs" in u.lower()]
     url = direct_urls[0] if direct_urls else urls[0]
     listing_id = _listing_id_from_url_or_text(url, text)
+    email_dt = _email_datetime(msg)
 
     return ListingInput(
         listing_id=listing_id,
@@ -153,6 +181,7 @@ def listing_from_email_message(msg: Message) -> Optional[ListingInput]:
         description=text[:2000],
         email_subject=subject,
         raw_text=text,
+        first_seen_at=email_dt or datetime.now(timezone.utc),
     )
 
 
@@ -169,7 +198,8 @@ class LeboncoinEmailWatcher:
             imap.login(self.settings.imap_user, self.settings.imap_password)
             imap.select(self.settings.imap_folder)
 
-            criteria = f'(UNSEEN FROM "{self.settings.lbc_email_filter}")'
+            since_date = (datetime.now(timezone.utc) - timedelta(days=self.settings.max_email_age_days)).strftime("%d-%b-%Y")
+            criteria = f'(UNSEEN FROM "{self.settings.lbc_email_filter}" SINCE "{since_date}")'
             status, data = imap.search(None, criteria)
             if status != "OK":
                 return []
@@ -181,7 +211,7 @@ class LeboncoinEmailWatcher:
                     continue
                 raw = msg_data[0][1]
                 msg = email.message_from_bytes(raw)
-                listing = listing_from_email_message(msg)
+                listing = listing_from_email_message(msg, max_age_days=self.settings.max_email_age_days)
                 if listing:
                     listings.append(listing)
         return listings
