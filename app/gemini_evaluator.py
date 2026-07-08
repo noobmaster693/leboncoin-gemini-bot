@@ -16,6 +16,13 @@ Goal: find profitable broken-laptop flips while avoiding risky purchases.
 
 Use only information in the listing. Do not invent specs or prices.
 
+Take extra care before marking a listing buy_ready. Think through:
+- exact model/spec uncertainty
+- likely repair cost
+- likely resale value
+- hidden damage risk
+- whether the seller description is enough to buy without questions
+
 Decision rules:
 - buy_ready: only if model/specs/damage/price are clear enough and risk is acceptable.
 - ask_seller: if it could be good but key info is missing.
@@ -68,20 +75,34 @@ class GeminiDealEvaluator:
         self.settings = settings
         self.client = genai.Client(api_key=settings.gemini_api_key)
 
+    def _make_config(self, include_thinking: bool = True) -> dict[str, Any]:
+        config: dict[str, Any] = {
+            "response_mime_type": "application/json",
+            "response_schema": DealEvaluation.model_json_schema(),
+            "temperature": self.settings.gemini_temperature,
+        }
+        if include_thinking and self.settings.gemini_thinking_budget >= 0:
+            config["thinking_config"] = {"thinking_budget": self.settings.gemini_thinking_budget}
+        return config
+
     def evaluate(self, listing: ListingInput) -> DealEvaluation:
         prompt = _build_prompt(listing)
-        schema: dict[str, Any] = DealEvaluation.model_json_schema()
 
-        # google-genai uses response_mime_type / response_schema.
-        # Do not use OpenAI-style response_format here.
-        response = self.client.models.generate_content(
-            model=self.settings.gemini_model,
-            contents=prompt,
-            config={
-                "response_mime_type": "application/json",
-                "response_schema": schema,
-            },
-        )
+        try:
+            response = self.client.models.generate_content(
+                model=self.settings.gemini_model,
+                contents=prompt,
+                config=self._make_config(include_thinking=True),
+            )
+        except Exception as exc:
+            # Some SDK/model combinations do not accept thinking_config.
+            if "thinking" not in str(exc).lower() and "extra" not in str(exc).lower():
+                raise
+            response = self.client.models.generate_content(
+                model=self.settings.gemini_model,
+                contents=prompt,
+                config=self._make_config(include_thinking=False),
+            )
 
         text = getattr(response, "text", "") or ""
         try:
