@@ -264,16 +264,20 @@ class LeboncoinEmailWatcher:
 
             ids = data[0].split()[-max_results:]
             for msg_id in ids:
-                status, msg_data = imap.fetch(msg_id, "(RFC822)")
+                # BODY.PEEK[] prevents the act of fetching from marking the email as read.
+                status, msg_data = imap.fetch(msg_id, "(BODY.PEEK[])")
                 if status != "OK" or not msg_data:
                     continue
                 raw = msg_data[0][1]
                 msg = email.message_from_bytes(raw)
-                listings.extend(
-                    listings_from_email_message(
-                        msg,
-                        max_age_days=self.settings.max_email_age_days,
-                        max_links=self.settings.max_listing_links_per_email,
-                    )
+                parsed_listings = listings_from_email_message(
+                    msg,
+                    max_age_days=self.settings.max_email_age_days,
+                    max_links=self.settings.max_listing_links_per_email,
                 )
+                print(f"Parsed email '{msg.get('Subject', '')[:80]}' -> {len(parsed_listings)} listing link(s).")
+                listings.extend(parsed_listings)
+
+                if self.settings.mark_emails_seen_after_parse:
+                    imap.store(msg_id, "+FLAGS", "\\Seen")
         return listings
