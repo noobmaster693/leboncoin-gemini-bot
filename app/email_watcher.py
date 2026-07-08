@@ -7,6 +7,7 @@ from email.utils import parsedate_to_datetime
 import hashlib
 import html as html_lib
 import imaplib
+import quopri
 import re
 from typing import List, Optional
 from urllib.parse import parse_qs, unquote, urlparse
@@ -19,6 +20,7 @@ from .models import ListingInput
 URL_RE = re.compile(r"https?://[^\s\"'<>]+")
 PRICE_RE = re.compile(r"(?<!\d)(\d{1,5}(?:[\s.,]\d{3})?)(?:\s?€|\s?EUR)", re.IGNORECASE)
 VI_LISTING_RE = re.compile(r"/vi/\d+\.htm", re.IGNORECASE)
+RAW_VI_URL_RE = re.compile(r"https?://www\.leboncoin\.fr/vi/\d+\.htm", re.IGNORECASE)
 
 IGNORE_SUBJECT_KEYWORDS = [
     "suppression de vos annonces",
@@ -127,6 +129,30 @@ def _extract_urls(text: str) -> list[str]:
     return list(dict.fromkeys(urls))
 
 
+def _extract_raw_listing_urls(raw: bytes) -> list[str]:
+    """Last-resort extraction from the raw RFC822 bytes.
+
+    This handles Gmail/IMAP edge cases where the parsed HTML body loses hrefs, plus
+    Leboncoin's quoted-printable line wrapping.
+    """
+    variants = []
+    for blob in [raw, quopri.decodestring(raw)]:
+        text = blob.decode("utf-8", errors="replace")
+        text = text.replace("=\r\n", "").replace("=\n", "")
+        text = html_lib.unescape(text)
+        variants.append(text)
+
+    urls: list[str] = []
+    for text in variants:
+        for match in RAW_VI_URL_RE.findall(text):
+            urls.append(_normalize_url(match))
+        for match in URL_RE.findall(text):
+            cleaned = _normalize_url(match)
+            if "leboncoin" in cleaned.lower() and _is_probable_listing_url(cleaned):
+                urls.append(cleaned)
+    return list(dict.fromkeys(urls))
+
+
 def _is_probable_listing_url(url: str) -> bool:
     low = url.lower()
     if any(marker in low for marker in TRACKING_OR_ACCOUNT_URL_MARKERS):
@@ -195,24 +221,16 @@ def _looks_like_listing_email(subject: str, text: str, urls: list[str]) -> bool:
     return has_listing_url or (has_hint and has_price)
 
 
-def listings_from_email_message(msg: Message, max_age_days: int = 3, max_links: int = 25) -> list[ListingInput]:
-    if _is_too_old(msg, max_age_days):
-        return []
-
-    subject = email.header.make_header(email.header.decode_header(msg.get("Subject", ""))).__str__()
-    text = _message_to_text(msg)
-    urls = _extract_urls(text)
-    if not urls:
-        return []
-
-    if not _looks_like_listing_email(subject, text, urls):
-        return []
-
+def _build_listing_inputs_from_urls(
+    *,
+    subject: str,
+    text: str,
+    urls: list[str],
+    email_dt: Optional[datetime],
+    max_links: int,
+) -> list[ListingInput]:
     direct_urls = [u for u in urls if _is_probable_listing_url(u)]
-    # Digest emails may contain many listing links. Treat each as its own listing candidate.
-    # If no direct listing URL is found, keep one fallback URL so the fetcher can reject it later.
     candidate_urls = direct_urls[:max_links] if direct_urls else urls[:1]
-    email_dt = _email_datetime(msg)
     price = _extract_price(text)
 
     listings: list[ListingInput] = []
@@ -235,6 +253,49 @@ def listings_from_email_message(msg: Message, max_age_days: int = 3, max_links: 
             )
         )
     return listings
+
+
+def listings_from_email_message(msg: Message, max_age_days: int = 3, max_links: int = 25) -> list[ListingInput]:
+    if _is_too_old(msg, max_age_days):
+        return []
+
+    subject = email.header.make_header(email.header.decode_header(msg.get("Subject", ""))).__str__()
+    text = _message_to_text(msg)
+    urls = _extract_urls(text)
+    if not urls:
+        return []
+
+    if not _looks_like_listing_email(subject, text, urls):
+        return []
+
+    return _build_listing_inputs_from_urls(
+        subject=subject,
+        text=text,
+        urls=urls,
+        email_dt=_email_datetime(msg),
+        max_links=max_links,
+    )
+
+
+def listings_from_raw_email(raw: bytes, max_age_days: int = 3, max_links: int = 25) -> list[ListingInput]:
+    msg = email.message_from_bytes(raw)
+    parsed = listings_from_email_message(msg, max_age_days=max_age_days, max_links=max_links)
+    if parsed:
+        return parsed
+
+    subject = email.header.make_header(email.header.decode_header(msg.get("Subject", ""))).__str__()
+    text = _message_to_text(msg)
+    raw_urls = _extract_raw_listing_urls(raw)
+    if not raw_urls:
+        return []
+
+    return _build_listing_inputs_from_urls(
+        subject=subject,
+        text=text or raw.decode("utf-8", errors="replace")[:3000],
+        urls=raw_urls,
+        email_dt=_email_datetime(msg),
+        max_links=max_links,
+    )
 
 
 def listing_from_email_message(msg: Message, max_age_days: int = 3) -> Optional[ListingInput]:
@@ -270,8 +331,8 @@ class LeboncoinEmailWatcher:
                     continue
                 raw = msg_data[0][1]
                 msg = email.message_from_bytes(raw)
-                parsed_listings = listings_from_email_message(
-                    msg,
+                parsed_listings = listings_from_raw_email(
+                    raw,
                     max_age_days=self.settings.max_email_age_days,
                     max_links=self.settings.max_listing_links_per_email,
                 )
