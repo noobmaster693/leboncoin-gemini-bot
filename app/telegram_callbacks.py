@@ -6,6 +6,7 @@ from typing import Any, Optional
 import requests
 
 from .config import Settings
+from .leboncoin_messenger import send_seller_message_sync
 from .storage import DealStore
 
 
@@ -70,14 +71,29 @@ class TelegramCallbackHandler:
             return
 
         if action == "ask":
-            self.store.update_status(listing_id, "needs_seller_message")
-            suggested = record.evaluation.seller_message_fr or "No seller message was generated. Open the listing and ask for missing info."
-            self.answer_callback(callback_id, "Seller message prepared.")
+            self.store.update_status(listing_id, "sending_seller_message")
+            self.answer_callback(callback_id, "Opening Leboncoin and sending seller message...")
             if chat_id:
-                self.send_message(
-                    chat_id,
-                    "<b>Copy/paste this message to the seller:</b>\n\n" + html.escape(suggested),
-                )
+                self.send_message(chat_id, "Opening Leboncoin to send the seller message now...")
+
+            result = send_seller_message_sync(record, self.settings)
+            if result.ok:
+                self.store.update_status(listing_id, "seller_message_sent")
+                if chat_id:
+                    self.send_message(chat_id, "✅ Seller message sent through Leboncoin.")
+                if chat_id and message_id:
+                    self.edit_reply_markup(chat_id, message_id)
+            else:
+                self.store.update_status(listing_id, "seller_message_failed")
+                suggested = record.evaluation.seller_message_fr or "No seller message was generated."
+                if chat_id:
+                    self.send_message(
+                        chat_id,
+                        "⚠️ <b>Could not auto-send the message.</b>\n\n"
+                        f"Reason: {html.escape(result.message)}\n\n"
+                        "<b>Copy/paste manually:</b>\n\n"
+                        + html.escape(suggested),
+                    )
             return
 
         if action == "buy":
